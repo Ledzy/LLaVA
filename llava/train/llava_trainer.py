@@ -13,7 +13,11 @@ from transformers.trainer import (
     logger,
 )
 from typing import List, Optional
-
+from types import MethodType
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from functools import partial
+import inspect
+import random
 
 def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
@@ -95,6 +99,40 @@ def get_length_grouped_indices(lengths, batch_size, world_size, generator=None, 
 
     return [i for megabatch in megabatches for batch in megabatch for i in batch]
 
+def gradient_checkpointing_enable(
+    self: "PreTrainedModel", gradient_checkpointing_kwargs: Optional[Dict[str, Any]] = None
+) -> None:
+    r"""
+    Activates gradient checkpointing for the current model.
+
+    Modification of the original method to enable gradient checkpointing for block-wise optimizer.
+    """
+    from torch.utils.checkpoint import checkpoint
+
+    if not self.supports_gradient_checkpointing:
+        raise ValueError("{} does not support gradient checkpointing.".format(self.__class__.__name__))
+
+    if gradient_checkpointing_kwargs is None:
+        gradient_checkpointing_kwargs = {"use_reentrant": True}
+
+    gradient_checkpointing_func = partial(checkpoint, **gradient_checkpointing_kwargs)
+
+    def custom_gradient_checkpointing_func(func, *args, **kwargs):
+        module: "torch.nn.Module" = func.__self__
+
+        if any(param.requires_grad for param in module.parameters()):
+            for arg in args:
+                if torch.is_tensor(arg) and torch.is_floating_point(arg):
+                    arg.requires_grad_(True)
+
+        return gradient_checkpointing_func(func, *args, **kwargs)
+
+    if "value" in inspect.signature(self._set_gradient_checkpointing).parameters:  # old GC format
+        self.apply(partial(self._set_gradient_checkpointing, value=True))
+        self.enable_input_require_grads()
+        logger.warning("You are using the old GC format, some features (e.g. BAdam) will be invalid.")
+    else:  # have already enabled input require gradients
+        self._set_gradient_checkpointing(enable=True, gradient_checkpointing_func=custom_gradient_checkpointing_func)
 
 class LengthGroupedSampler(Sampler):
     r"""
@@ -131,6 +169,14 @@ class LengthGroupedSampler(Sampler):
 
 
 class LLaVATrainer(Trainer):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # The original gradient_checkpointing_enable sets the output of embedding layer requires_grad=True.
+        # This will make the model BP to the embedding output, which is not necessary when model only trains
+        # the intermediate layer. The customized gradient_checkpointing_enable resolves the issue by setting
+        # input's requires_grad to True only when the layer is trainable.
+        self.model.gradient_checkpointing_enable = MethodType(gradient_checkpointing_enable, self.model)
 
     def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         if self.train_dataset is None or not has_length(self.train_dataset):
@@ -211,6 +257,27 @@ class LLaVATrainer(Trainer):
             optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
 
             self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+            
+            # Wrap the original optimizer to use BAdam
+            if self.args.badam_enable:
+                from badam import BlockOptimizer
+
+                num_layers = 32
+                block_partitions = []
+                for i in range(num_layers):
+                    # each block contains 1 LLM layer and 10 randomly sampled vision model layers
+                    partition = [[f"model.layers.{i}."] + \
+                        [f"model.vision_tower.vision_tower.vision_model.encoder.layers.{j}." for j in random.sample(range(23), 10)]]
+                    block_partitions += partition
+                
+                self.optimizer = BlockOptimizer(self.optimizer,
+                                                named_parameters_list=list(opt_model.named_parameters()),
+                                                block_prefix_list=block_partitions,
+                                                switch_block_every=128,
+                                                switch_mode="random",
+                                                # active_modules=["model.mm_projector."],
+                )
+                
             if optimizer_cls.__name__ == "Adam8bit":
                 import bitsandbytes
 

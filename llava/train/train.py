@@ -21,6 +21,7 @@ import json
 import logging
 import pathlib
 from typing import Dict, Optional, Sequence, List
+import random
 
 import torch
 
@@ -35,11 +36,14 @@ from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token
 
-from PIL import Image
+from PIL import Image, ImageFile
 
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 local_rank = None
 
+random.seed(42)
+torch.random.manual_seed(42)
 
 def rank0_print(*args):
     if local_rank == 0:
@@ -74,6 +78,7 @@ class DataArguments:
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
+    num_data: int = 10000
 
 
 @dataclass
@@ -103,6 +108,7 @@ class TrainingArguments(transformers.TrainingArguments):
         metadata={"help": "How many bits to use."}
     )
     lora_enable: bool = False
+    badam_enable: bool = False
     lora_r: int = 64
     lora_alpha: int = 16
     lora_dropout: float = 0.05
@@ -698,7 +704,12 @@ class LazySupervisedDataset(Dataset):
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
-            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            try:
+                image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            except Exception as e:
+                # when loading error happens, use the first image as replacement
+                print(f"Error when loading image {image_file}: {e}")
+                image = Image.open(os.path.join(image_folder, self.list_data_dict[0]['image'])).convert('RGB')
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
@@ -779,6 +790,9 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
     train_dataset = LazySupervisedDataset(tokenizer=tokenizer,
                                 data_path=data_args.data_path,
                                 data_args=data_args)
+    if data_args.num_data is not None:
+        idx = random.sample(range(0, len(train_dataset.list_data_dict)), data_args.num_data)
+        train_dataset.list_data_dict = [train_dataset.list_data_dict[i] for i in idx]
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
@@ -943,6 +957,13 @@ def train(attn_implementation=None):
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
 
+    # Make sure vision model's grad will be computed when using gradient checkpoint
+    if training_args.gradient_checkpointing:
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        vision_embedding_layer = model.get_vision_tower().vision_tower.vision_model.embeddings
+        vision_embedding_layer.register_forward_hook(make_inputs_require_grad)
+
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
         for name, module in model.named_modules():
@@ -962,6 +983,11 @@ def train(attn_implementation=None):
                     tokenizer=tokenizer,
                     args=training_args,
                     **data_module)
+    
+    # Callback is used for set up  BAdam for distributed training.
+    if not training_args.badam_enable:
+        from badam.utils import BAdamCallback
+        trainer.add_callback(BAdamCallback)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

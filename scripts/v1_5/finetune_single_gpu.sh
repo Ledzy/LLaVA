@@ -2,8 +2,7 @@
 
 cd ../..
 
-deepspeed -i localhost:0,1,2,3 llava/train/train_mem.py \
-    --deepspeed ./scripts/zero3.json \
+python llava/train/train_mem.py \
     --badam_enable True \
     --model_name_or_path path-to-vicuna-7b-v1.5 \
     --version v1 \
@@ -19,10 +18,10 @@ deepspeed -i localhost:0,1,2,3 llava/train/train_mem.py \
     --group_by_modality_length True \
     --bf16 True \
     --output_dir ./checkpoints/llava-v1.5-7b \
-    --num_train_epochs 4 \
-    --per_device_train_batch_size 8 \
-    --per_device_eval_batch_size 8 \
-    --gradient_accumulation_steps 2 \
+    --num_train_epochs 10 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 16 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 50000 \
