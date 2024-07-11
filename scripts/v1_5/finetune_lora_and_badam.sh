@@ -5,6 +5,7 @@ export WANDB_API_KEY=050494f3e7168f878de42f18da496d52b4592003
 cd ../..
 
 python llava/train/train_mem.py \
+    --lora_enable True --lora_r 16 --lora_alpha 32 --mm_projector_lr 2e-5 \
     --badam_enable True \
     --model_name_or_path liuhaotian/llava-v1.5-7b \
     --version v1 \
@@ -19,11 +20,11 @@ python llava/train/train_mem.py \
     --image_aspect_ratio pad \
     --group_by_modality_length True \
     --bf16 True \
-    --output_dir ./checkpoints/llava-v1.5-7b \
+    --output_dir ./checkpoints/llava-v1.5-13b-task-lora \
     --num_train_epochs 10 \
-    --per_device_train_batch_size 1 \
-    --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps 16 \
+    --per_device_train_batch_size 16 \
+    --per_device_eval_batch_size 16 \
+    --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 50000 \
