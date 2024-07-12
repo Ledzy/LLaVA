@@ -273,8 +273,9 @@ class LLaVATrainer(Trainer):
                 self.optimizer = BlockOptimizer(self.optimizer,
                                                 named_parameters_list=list(opt_model.named_parameters()),
                                                 block_prefix_list=block_partitions,
-                                                switch_block_every=128,
+                                                switch_block_every=self.args.badam_switch_block_every,
                                                 switch_mode="random",
+                                                lora_mode=self.args.badam_lora_mode
                                                 # active_modules=["model.mm_projector."],
                 )
                 

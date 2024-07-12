@@ -109,6 +109,8 @@ class TrainingArguments(transformers.TrainingArguments):
     )
     lora_enable: bool = False
     badam_enable: bool = False
+    badam_lora_mode: str = "all"
+    badam_switch_block_every: Optional[int] = 128
     lora_r: int = 64
     lora_alpha: int = 16
     lora_dropout: float = 0.05

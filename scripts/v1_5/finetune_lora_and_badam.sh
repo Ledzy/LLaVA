@@ -5,8 +5,8 @@ export WANDB_API_KEY=050494f3e7168f878de42f18da496d52b4592003
 cd ../..
 
 python llava/train/train_mem.py \
+    --badam_enable True --badam_lora_mode partial --badam_switch_block_every 128 \
     --lora_enable True --lora_r 16 --lora_alpha 32 --mm_projector_lr 2e-5 \
-    --badam_enable True \
     --model_name_or_path liuhaotian/llava-v1.5-7b \
     --version v1 \
     --data_path ./playground/data/llava_v1_5_mix665k.json \
